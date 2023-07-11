@@ -1,13 +1,25 @@
 diff --git a/Documentation/usb/gadget_configfs.rst b/Documentation/usb/gadget_configfs.rst
-index 158e48dab586..84f2843d3b85 100644
+index 84f2843d3b85..8ee1f3e53754 100644
 --- a/Documentation/usb/gadget_configfs.rst
 +++ b/Documentation/usb/gadget_configfs.rst
-@@ -15,6 +15,8 @@ A USB Linux Gadget is a device which has a UDC (USB Device Controller) and can
- be connected to a USB Host to extend it with additional functions like a serial
+@@ -16,16 +16,19 @@ be connected to a USB Host to extend it with additional functions like a serial
  port or a mass storage capability.
  
-+从主机的视角来看，一个 gadget 是一些配置的集合，每一个配置都包含了一系列的接口。这些
-+接口从 gadget 的角度来看就被称为功能。
+ 从主机的视角来看，一个 gadget 是一些配置的集合，每一个配置都包含了一系列的接口。这些
+-接口从 gadget 的角度来看就被称为功能。
++接口从 gadget 的角度来看就被称为功能。每一个功能表示比如串口，或者 SCSI 磁盘。
  A gadget is seen by its host as a set of configurations, each of which contains
  a number of interfaces which, from the gadget's perspective, are known as
  functions, each function representing e.g. a serial connection or a SCSI disk.
+ 
++Linux 给 gadgets 提供了一系列的功能来用。
+ Linux provides a number of functions for gadgets to use.
+ 
++创建一个 gadget 意味着决定了将会使用的配置，以及每一个配置将会提供的功能。
+ Creating a gadget means deciding what configurations there will be
+ and which functions each configuration will provide.
+ 
++Configfs 
+ Configfs (please see `Documentation/filesystems/configfs.rst`) lends itself nicely
+ for the purpose of telling the kernel about the above mentioned decision.
+ This document is about how to do it.
