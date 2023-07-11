@@ -9,6 +9,14 @@ $ make ARCH=arm64 defconfig
 $ make ARCH=arm64 Image dtbs -j16
 ```
 
+3. RZ/G2L 核心
+	![](assets/LSI_Bus.png)
+	![](assets/LSI_Bus_overall.png)
+	* LSI Internal Bus (34 bit address 以及 16GB 内存空间)
+		1. ACPU bus : A55
+		2. MCPU bus : M33
+		3. System bus : 
+	* USB2.0 接口,包含1路 USB2.0 OTG/DRD(Host/Function)和1路 USB2.0 Host接口。
 启动参数配置：
 
-![](/home/red/Codes_of_pro/blackmagic4RZ/assets/boot_rz2.png)
+![](assets/boot_rz2.png)
