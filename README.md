@@ -34,3 +34,7 @@ $ make ARCH=arm64 Image dtbs -j16 // 会生成 Image 和 dtb 文件
 启动参数配置：
 
 ![](assets/boot_rz2.png)
+
+4. RZ/G2L USB 相关
+	* USB0 作为 OTG/DRP **device 模式**
+	* USB1 通过 USB HUB 转成两路 USB, **host 模式**

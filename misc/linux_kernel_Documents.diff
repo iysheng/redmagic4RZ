@@ -1,25 +1,728 @@
+diff --git a/Documentation/driver-api/usb/gadget.rst b/Documentation/driver-api/usb/gadget.rst
+index 09396edd6131..e0ab9898ef76 100644
+--- a/Documentation/driver-api/usb/gadget.rst
++++ b/Documentation/driver-api/usb/gadget.rst
+@@ -8,6 +8,17 @@ USB Gadget API for Linux
+ Introduction
+ ============
+ 
++这个文档描述了一个 Linux-USB “Gadget” 内核模块 API，为了在外设以及潜入到 Linux 的
++其他 USB 设备中使用。它提供了这些 API 的一个概览或者概览，并且展示了如何将它应用到一个开发的系统工程中。
++发布这个 API 的首要目的是强调一系列的重要问题，包括：
++
++-支持 USB2.0，支持高速设备
++-处理上百个端点的设备看起来就像是具有两个固定功能的点。重写 Gadget 部分的驱动以便更方便地移植到新的硬件
++-足够灵活来处理更加复杂的 USB 设备能力，比如多个配置，多个接口，组合设备以及**备选接口设置**。
++-支持USB OTG,同步更新 host 端的升级
++-和 host 端共享数据结构和API 模型，这有助于对 OTG 的支持，并且框架看起来更加对称（host端和device端使用相同的框架模型）
++-往小了说，可以降低新的设备控制器的开发难度，I/O 处理不需要花费大量的内存和CPU资源。
++
+ This document presents a Linux-USB "Gadget" kernel mode API, for use
+ within peripherals and other USB devices that embed Linux. It provides
+ an overview of the API structure, and shows how that fits into a system
+@@ -37,19 +48,34 @@ address a number of important problems, including:
+    I/O processing doesn't imply large demands for memory or CPU
+    resources.
+ 
++很多Linux 开发者将不能使用这个 API，因为他们的PC机，工作站或者服务器使用的是USB host控制器。
++使用嵌入式 Linux 的用户可能会更容易碰到使用 USB device 硬件，即作为从机的 USB 设备。
+ Most Linux developers will not be able to use this API, since they have
+ USB ``host`` hardware in a PC, workstation, or server. Linux users with
+-embedded systems are more likely to have USB peripheral hardware. To
+-distinguish drivers running inside such hardware from the more familiar
++embedded systems are more likely to have USB peripheral hardware. 
++
++为了和在传统 USB 主机端运行的 USB device drivers 区别开来，我们在这里使用不同的术语：
++在设备端运行的驱动是 USB gadget drivers，在 USB 交互协议中，host 端的 device driver 被称为"client driver",
++gadget 驱动是 slave,或者称之为 "function driver".
++
++To distinguish drivers running inside such hardware from the more familiar
+ Linux "USB device drivers", which are host side proxies for the real USB
+ devices, a different term is used: the drivers inside the peripherals
+ are "USB gadget drivers". In USB protocol interactions, the device
+ driver is the master (or "client driver") and the gadget driver is the
+ slave (or "function driver").
+ 
++gadget API 效仿主机端的 Linux-USB API 实现缓存I/O相关的请求，以及那些可能被提交或者撤销的请求。
+ The gadget API resembles the host side Linux-USB API in that both use
+ queues of request objects to package I/O buffers, and those requests may
+-be submitted or canceled. They share common definitions for the standard
++be submitted or canceled. 
++
++他们共享标准 USB 的第 9 章通用的定义，包括，消息，结构体和常量。同时也包括
++bind 和 unbind 驱动到设备的内容。host 的 peripheral 驱动 API 之间有差异，因为
++host 端现有的 URB 框架暴露了一些细节的实现，并且假定这些它们不适用于 gadget API。
++虽然控制传输和配置管理的模型完全不同（一边是硬件中性主设备，另一边是硬件感知从设备），
++这里使用的端点I/0 API也可以被用到降低开销的主机册 API。
++They share common definitions for the standard
+ USB *Chapter 9* messages, structures, and constants. Also, both APIs
+ bind and unbind drivers to devices. The APIs differ in detail, since the
+ host side's current URB framework exposes a number of implementation
+@@ -59,18 +85,28 @@ necessarily different (one side is a hardware-neutral master, the other
+ is a hardware-aware slave), the endpoint I/0 API used here should also
+ be usable for an overhead-reduced host side API.
+ 
++Gadget 驱动的结构体
+ Structure of Gadget Drivers
+ ===========================
+ 
++在USB外设端运行的系统内核一般具有至少3层结构来处理 USB 协议，同时可能在用户态有额外的层。
++gadget API被用到中间层和最底层（直接和硬件打交道）交互。
+ A system running inside a USB peripheral normally has at least three
+ layers inside the kernel to handle USB protocol processing, and may have
+ additional layers in user space code. The ``gadget`` API is used by the
+ middle layer to interact with the lowest level (which directly handles
+ hardware).
+ 
++在 Linux 中，从底层到顶层，这些层分别是：
+ In Linux, from the bottom up, these layers are:
+ 
++USB 控制器驱动
+ *USB Controller Driver*
++这是最底层的软件层。这是唯一和硬件通信的层，通过寄存器，fifos,dma,irqs等等。
++<linux/usb/gadget.h> 头文件中的 API 对外设控制器端点硬件进行抽象。这个硬件通过
++endpoint 对象进行导出，endpoint 可以接收 IN/OUT 缓存的流，通过回调函数和 gadget 驱动
++进行通信。因为一般的 USB 设备只有一个上行口，他们只能有一个对应的驱动。虽然控制器驱动
++可以支持多种 gadget 驱动，但是同一时刻只能使用一种。
+     This is the lowest software level. It is the only layer that talks
+     to hardware, through registers, fifos, dma, irqs, and the like. The
+     ``<linux/usb/gadget.h>`` API abstracts the peripheral controller
+@@ -85,7 +121,12 @@ In Linux, from the bottom up, these layers are:
+     2280 USB 2.0 high speed controller, the SA-11x0 or PXA-25x UDC
+     (found within many PDAs), and a variety of other products.
+ 
++Gadget 驱动
+ *Gadget Driver*
++该驱动程序的下边界实现了和硬件无关的 USB 功能，通过调用控制器驱动的方式来实现。
++因为硬件的容量和限制变化很大，并且在嵌入式设备中，容量很珍贵，单一时刻只会编译一种
++gadget 驱动,最新的内核简化了这个过程支持新的硬件，通过 "autoconfiguring" 这个 endpoint。
++Gadget 驱动响应包含如下：
+     The lower boundary of this driver implements hardware-neutral USB
+     functions, using calls to the controller driver. Because such
+     hardware varies widely in capabilities and restrictions, and is used
+@@ -98,49 +139,68 @@ In Linux, from the bottom up, these layers are:
+     automatically for many bulk-oriented drivers.) Gadget driver
+     responsibilities include:
+ 
++    - 处理 setup 请求, 建立事务，通过 ep0 协议响应, 可能还包含有类专有的功能
+     -  handling setup requests (ep0 protocol responses) possibly
+        including class-specific functionality
+ 
++    - 返回配置和字符串描述符
+     -  returning configuration and string descriptors
+ 
++    - （重新）设置配置和接口，包括使能和配置端点
+     -  (re)setting configurations and interface altsettings, including
+        enabling and configuring endpoints
+ 
++    - 处理 life cycle (~~等时传输~~)事件，比如处理绑定大盘硬件，USB抑制/恢复，远程唤醒
+     -  handling life cycle events, such as managing bindings to
+        hardware, USB suspend/resume, remote wakeup, and disconnection
+        from the USB host.
+ 
++    - 在目前使能的 endpoints 上处理 IN 和 OUT 事务
+     -  managing IN and OUT transfers on all currently enabled endpoints
+ 
++    这些驱动可能使用了一些合适但是不被 Linux 社区鼓励的代码
+     Such drivers may be modules of proprietary code, although that
+     approach is discouraged in the Linux community.
+ 
++上层
+ *Upper Level*
++许多 gadget 驱动有一个上边界用来链接一些 Linux 驱动或者 Linux 的框架。通过 USB 根据协议传输的生产或者消费数据通过这个边界流通，
++举例子：
+     Most gadget drivers have an upper boundary that connects to some
+     Linux driver or framework in Linux. Through that boundary flows the
+     data which the gadget driver produces and/or consumes through
+     protocol transfers over USB. Examples include:
+ 
++    - 用户模式代码，使用通用（gadgetfs）或者 /dev 目录下的应用专有文件
+     -  user mode code, using generic (gadgetfs) or application specific
+        files in ``/dev``
+ 
++    - 网络子系统（针对网络 gadget,像 CDC Ethernet Model gadget 驱动）
+     -  networking subsystem (for network gadgets, like the CDC Ethernet
+        Model gadget driver)
+ 
++    - 数据捕获驱动，比如 video4Linux 或者扫描机驱动;或者测试以及测量硬件
+     -  data capture drivers, perhaps video4Linux or a scanner driver; or
+        test and measurement hardware.
+ 
++    - 输入子系统（HID gadgets）
+     -  input subsystem (for HID gadgets)
+ 
++    - 音频子系统（audio gadgets）
+     -  sound subsystem (for audio gadgets)
+ 
++    - 文件子系统
+     -  file system (for PTP gadgets)
+ 
+     -  block i/o subsystem (for usb-storage gadgets)
+ 
+     -  ... and more
+ 
++额外的层
+ *Additional Layers*
++也可能存在其他的的层。可以包括内核层，比如网络协议栈，基于标准 POSIX 系统调用的
++用户态接口应用 open(), close(), read() 以及 write()。在较新的系统上，POSIX 异步 I/O
++调用也是一个侯选项。这些用户态的代码可以不是 GPL 的。
+     Other layers may exist. These could include kernel layers, such as
+     network protocol stacks, as well as user mode applications building
+     on standard POSIX system call APIs such as ``open()``, ``close()``,
+@@ -148,16 +208,27 @@ In Linux, from the bottom up, these layers are:
+     be an option. Such user mode code will not necessarily be subject to
+     the GNU General Public License (GPL).
+ 
++具有 OTG 能力的系统也将需要包含一个标准的 Linux-USB host 端的栈，usbcore,一个或者多个
++Host Controller Drives(HCDs), USB Device Drives 来支持 OTG Controller Driver.
++这里也会有一个 OTG Controller Driver,这个驱动对 gadget 和设备驱动开发人员是间接可见的。
++
+ OTG-capable systems will also need to include a standard Linux-USB host
+ side stack, with ``usbcore``, one or more *Host Controller Drivers*
+ (HCDs), *USB Device Drivers* to support the OTG "Targeted Peripheral
+ List", and so forth. There will also be an *OTG Controller Driver*,
+ which is visible to gadget and device driver developers only indirectly.
++这有助于主机和设备端 USB 控制器实现这两个新的 OTG 协议（HNP 和 SRP）,在USB suspend 过程中，使用
++HNP 实现角色切换(主机到外设，或者反向)，SRP 可以被视为电池友好的设备唤醒协议。
+ That helps the host and device side USB controllers implement the two
+ new OTG protocols (HNP and SRP). Roles switch (host to peripheral, or
+ vice versa) using HNP during USB suspend processing, and SRP can be
+ viewed as a more battery-friendly kind of device wakeup protocol.
+ 
++随着时间的推移,开发了很多有助于简化一些 gadget 驱动任务的可复用的工具。举例来说，根据厂家
++向量描述符构建配置接口和端点描述符现在是自动完成的，并且许多驱动现在使用自动配置来选择硬件
++端点并初始化它们的描述符。实际有意义的一个潜在示例是编码实现一个标准 USB-IF 协议的 HID，网络，存储或者音频类。
++一些开发者对 kdb 或者 kgdb hooks 有兴趣，可以远程对目标硬件进行远程调试。很多这样的 USB 协议代码都不需要专门的
++硬件，就像 X11, HTTP或者 NFS 这些网络协议那样。这些 gadget 端的接口驱动也应该被合并实现混合/复合设备。
+ Over time, reusable utilities are evolving to help make some gadget
+ driver tasks simpler. For example, building configuration descriptors
+ from vectors of descriptors for the configurations interfaces and
+@@ -171,9 +242,11 @@ hardware-specific, any more than network protocols like X11, HTTP, or
+ NFS are. Such gadget-side interface drivers should eventually be
+ combined, to implement composite devices.
+ 
++内核模式的 Gadget API
+ Kernel Mode Gadget API
+ ======================
+ 
++gadget 驱动声明它们自己为结构体 struct usb_gadget_driver
+ Gadget drivers declare themselves through a struct
+ :c:type:`usb_gadget_driver`, which is responsible for most parts of enumeration
+ for a struct usb_gadget. The response to a set_configuration usually
+diff --git a/Documentation/usb/gadget-testing.rst b/Documentation/usb/gadget-testing.rst
+index 2eeb3e9299e4..5c53d2d1d168 100644
+--- a/Documentation/usb/gadget-testing.rst
++++ b/Documentation/usb/gadget-testing.rst
+@@ -2,6 +2,7 @@
+ Gadget Testing
+ ==============
+ 
++这个文档总结了gadget 提供的 USB 功能的基本测试信息
+ This file summarizes information on basic testing of USB functions
+ provided by gadgets.
+ 
+@@ -29,14 +30,19 @@ provided by gadgets.
+    20. UAC1 function (new API)
+ 
+ 
++1. ACM 功能
+ 1. ACM function
+ ===============
+ 
++这个功能由 usb_f_acm.ko 模块提供。
+ The function is provided by usb_f_acm.ko module.
+ 
++功能专有的 configfs 接口
+ Function-specific configfs interface
+ ------------------------------------
+ 
++当创建这个功能的时候使用的这个功能名字是 acm.ACM功能仅仅在它的功能目录中
++提供了一个属性， port_num, 并且这个属性是只读的。
+ The function name to use when creating the function directory is "acm".
+ The ACM function provides just one attribute in its function directory:
+ 
+@@ -47,6 +53,7 @@ The attribute is read-only.
+ There can be at most 4 ACM/generic serial/OBEX ports in the system.
+ 
+ 
++测试 ACM 功能
+ Testing the ACM function
+ ------------------------
+ 
 diff --git a/Documentation/usb/gadget_configfs.rst b/Documentation/usb/gadget_configfs.rst
-index 84f2843d3b85..8ee1f3e53754 100644
+index 8ee1f3e53754..c69c6310a571 100644
 --- a/Documentation/usb/gadget_configfs.rst
 +++ b/Documentation/usb/gadget_configfs.rst
-@@ -16,16 +16,19 @@ be connected to a USB Host to extend it with additional functions like a serial
- port or a mass storage capability.
- 
- 从主机的视角来看，一个 gadget 是一些配置的集合，每一个配置都包含了一系列的接口。这些
--接口从 gadget 的角度来看就被称为功能。
-+接口从 gadget 的角度来看就被称为功能。每一个功能表示比如串口，或者 SCSI 磁盘。
- A gadget is seen by its host as a set of configurations, each of which contains
- a number of interfaces which, from the gadget's perspective, are known as
- functions, each function representing e.g. a serial connection or a SCSI disk.
- 
-+Linux 给 gadgets 提供了一系列的功能来用。
- Linux provides a number of functions for gadgets to use.
- 
-+创建一个 gadget 意味着决定了将会使用的配置，以及每一个配置将会提供的功能。
+@@ -28,11 +28,13 @@ Linux provides a number of functions for gadgets to use.
  Creating a gadget means deciding what configurations there will be
  and which functions each configuration will provide.
  
-+Configfs 
+-Configfs 
++Configfs (请参看 Documentation/filesystems/configfs.rst) 使告诉内核有关上述参数配置
++相关的内容变得更加友好。这个文档就是有关这部分内容的介绍。
  Configfs (please see `Documentation/filesystems/configfs.rst`) lends itself nicely
  for the purpose of telling the kernel about the above mentioned decision.
  This document is about how to do it.
+ 
++这里也描述了 configfs 集成到 gadget 这部分内容中是如何设计的。
+ It also describes how configfs integration into gadget is designed.
+ 
+ 
+@@ -41,6 +43,8 @@ It also describes how configfs integration into gadget is designed.
+ Requirements
+ ============
+ 
++为了这个目的，前提条件是 configfs 必须有效， 所以 CONFIGFS_FS 必须选择为 y 或者 m.
++因为这个原因，选择 USB_LIBCOMPOSITE 会强制选择 CONFIGFS_FS
+ In order for this to work configfs must be available, so CONFIGFS_FS must be
+ 'y' or 'm' in .config. As of this writing USB_LIBCOMPOSITE selects CONFIGFS_FS.
+ 
+@@ -50,6 +54,7 @@ In order for this to work configfs must be available, so CONFIGFS_FS must be
+ Usage
+ =====
+ 
++(通过 configfs 描述第一个功能最原始的文章如下)
+ (The original post describing the first function
+ made available through configfs can be seen here:
+ http://www.spinics.net/lists/linux-usb/msg76388.html)
+@@ -59,11 +64,14 @@ http://www.spinics.net/lists/linux-usb/msg76388.html)
+ 	$ modprobe libcomposite
+ 	$ mount none $CONFIGFS_HOME -t configfs
+ 
++CONFIGFS_HOME 是 configfs 的挂载点
+ where CONFIGFS_HOME is the mount point for configfs
+ 
++1. 创建 gadgets
+ 1. Creating the gadgets
+ -----------------------
+ 
++每一个将要创建的 gadget 都要创建一个对应的目录
+ For each gadget to be created its corresponding directory must be created::
+ 
+ 	$ mkdir $CONFIGFS_HOME/usb_gadget/<gadget name>
+@@ -78,31 +86,38 @@ e.g.::
+ 
+ 	$ cd $CONFIGFS_HOME/usb_gadget/g1
+ 
++每一个 gadget 都需要和它对应的 VID 和 PID
+ Each gadget needs to have its vendor id <VID> and product id <PID> specified::
+ 
+ 	$ echo <VID> > idVendor
+ 	$ echo <PID> > idProduct
+ 
++一个 gadget 也需要它的序列号，制造商和产品字符串。
+ A gadget also needs its serial number, manufacturer and product strings.
++为了有一个地方存储它们，需要为每一个语言创建一个字符串的子目录，比如：
+ In order to have a place to store them, a strings subdirectory must be created
+ for each language, e.g.::
+ 
++0X409 表示美式英语，完整的文档请参看https://winprotocoldoc.blob.core.windows.net/productionwindowsarchives/MS-LCID/%5bMS-LCID%5d.pdf
+ 	$ mkdir strings/0x409
+ 
++然后就可以使用如下命令设置对应的字符串了
+ Then the strings can be specified::
+ 
+ 	$ echo <serial number> > strings/0x409/serialnumber
+ 	$ echo <manufacturer> > strings/0x409/manufacturer
+ 	$ echo <product> > strings/0x409/product
+ 
++2. 创建配置
+ 2. Creating the configurations
+ ------------------------------
+ 
++每一个 gadget 都有一些配置组成，对应的都需要创建相关的目录:
+ Each gadget will consist of a number of configurations, their corresponding
+ directories must be created:
+ 
+ $ mkdir configs/<name>.<number>
+-
++其中，<name>是一个文件系统中有效的任意字符串，<number>对应的是配置的编号
+ where <name> can be any string which is legal in a filesystem and the
+ <number> is the configuration's number, e.g.::
+ 
+@@ -112,27 +127,34 @@ where <name> can be any string which is legal in a filesystem and the
+ 	...
+ 	...
+ 
++每一个配置也需要一些字符串信息，所以也需要为每一个语言ID创建一个目录
+ Each configuration also needs its strings, so a subdirectory must be created
+ for each language, e.g.::
+ 
+ 	$ mkdir configs/c.1/strings/0x409
+ 
++配置的字符串内容就可以通过如下命令存储起来了
+ Then the configuration string can be specified::
+ 
+ 	$ echo <configuration> > configs/c.1/strings/0x409/configuration
+ 
++也可以为这个配置设置一些属性信息,比如
+ Some attributes can also be set for a configuration, e.g.::
+ 
++设置电流最大为 120 * 2ma, 电流最低刻度为 2ma
+ 	$ echo 120 > configs/c.1/MaxPower
+ 
++3. 创建功能
+ 3. Creating the functions
+ -------------------------
+ 
++gadget 将提供一些功能，每一个功能都需要创建对应的目录：
+ The gadget will provide some functions, for each function its corresponding
+ directory must be created::
+ 
+ 	$ mkdir functions/<name>.<instance name>
+ 
++其中 <name> 对应的是允许的功能的名字，并且示例名字是一个文件系统中允许的任意字符串,
+ where <name> corresponds to one of allowed function names and instance name
+ is an arbitrary string allowed in a filesystem, e.g.::
+ 
+@@ -141,15 +163,21 @@ is an arbitrary string allowed in a filesystem, e.g.::
+   ...
+   ...
+   ...
+-
++每一个功能提供了它独有的一些属性集，可能是只读的或者是有读写权限的。通过对这些
++属性进行重写可以实现专门的功能。
+ Each function provides its specific set of attributes, with either read-only
+ or read-write access. Where applicable they need to be written to as
+ appropriate.
++请参看 Documentation/ABI/*/configfs-usb-gadget 来获得更多信息
+ Please refer to Documentation/ABI/*/configfs-usb-gadget* for more information.
+ 
++4. 将功能和它们的配置关联起来
+ 4. Associating the functions with their configurations
+ ------------------------------------------------------
+ 
++到这里的时候，已经创建了很多 gadget,每一个 gadget 都有一些专门的配置和功能。还存在
++的问题是任意的配置包含有哪些功能。(相同的功能可以用在多个配置中)。这是通过创建软链接
++的形式实现的。
+ At this moment a number of gadgets is created, each of which has a number of
+ configurations specified and a number of functions available. What remains
+ is specifying which function is available in which configuration (the same
+@@ -166,12 +194,15 @@ e.g.::
+ 	...
+ 	...
+ 
++5. 使能 gadget
+ 5. Enabling the gadget
+ ----------------------
+ 
++所有的上述步骤实现了将配置和功能继承到 gagdet 的目的。
+ All the above steps serve the purpose of composing the gadget of
+ configurations and functions.
+ 
++一个示意目录结构如下所示：
+ An example directory structure might look like this::
+ 
+   .
+@@ -204,9 +235,10 @@ An example directory structure might look like this::
+   ./bDeviceSubClass
+   ./bDeviceClass
+ 
+-
++上述 gadget 必须使能后，才能被 USB host 枚举出来。
+ Such a gadget must be finally enabled so that the USB host can enumerate it.
+ 
++使用如下命令使能这个 gadget
+ In order to enable the gadget it must be bound to a UDC (USB Device
+ Controller)::
+ 
+@@ -218,6 +250,7 @@ e.g.::
+ 	$ echo s3c-hsotg > UDC
+ 
+ 
++6. 禁用这个 gadget
+ 6. Disabling the gadget
+ -----------------------
+ 
+@@ -228,6 +261,7 @@ e.g.::
+ 7. Cleaning up
+ --------------
+ 
++从配置中移除功能
+ Remove functions from configurations::
+ 
+ 	$ rm configs/<config name>.<number>/<function>
+@@ -241,6 +275,7 @@ a symlink to a function being removed from the configuration, e.g.::
+ 	...
+ 	...
+ 
++从配置中移除字符串
+ Remove strings directories in configurations:
+ 
+ 	$ rmdir configs/<config name>.<number>/strings/<lang>
+@@ -253,6 +288,7 @@ e.g.::
+ 	...
+ 	...
+ 
++移除配置
+ and remove the configurations::
+ 
+ 	$ rmdir configs/<config name>.<number>
+@@ -265,6 +301,7 @@ e.g.::
+ 	...
+ 	...
+ 
++移除功能（即使功能模块没有被卸载）
+ Remove functions (function modules are not unloaded, though):
+ 
+ 	$ rmdir functions/<name>.<instance name>
+@@ -277,6 +314,7 @@ e.g.::
+ 	...
+ 	...
+ 
++移除 gadget 的字符串目录
+ Remove strings directories in the gadget::
+ 
+ 	$ rmdir strings/<lang>
+@@ -285,6 +323,7 @@ e.g.::
+ 
+ 	$ rmdir strings/0x409
+ 
++最终移除这个 gadget
+ and finally remove the gadget::
+ 
+ 	$ cd ..
+@@ -297,9 +336,14 @@ e.g.::
+ 
+ 
+ 
++设计实现
+ Implementation design
+ =====================
+-
++有关 configfs 是如何实现的如下所述。configfs 中分为 item 和 group,它们都是
++以目录的形式表现的。它们之间的区别是 group 可以包含其他 groups.下面的图片中，
++只展示了一个 item.items 和 groups 都可以包含属性，属性是以文件形式存储的。读者
++可以创建或者删除目录，但是不能直接删除文件，这些文件的权限根据它们表示的内容不同，
++权限可能是只读的或者读写的。
+ Below the idea of how configfs works is presented.
+ In configfs there are items and groups, both represented as directories.
+ The difference between an item and a group is that a group can contain
+@@ -308,12 +352,17 @@ Both items and groups can have attributes, which are represented as files.
+ The user can create and remove directories, but cannot remove files,
+ which can be read-only or read-write, depending on what they represent.
+ 
++configfs 中的文件系统部分对 config_items/groups 和 configfs_attributes 进行操作，
++它们是通用的并且对所有配置的元素具有相同的类型。
++但是，它们嵌入到专用的较大的结构体中。下属图片中有一个 cs 包含了一个 config_item
++和一个 sa 包含了一个 configfs_attribute
+ The filesystem part of configfs operates on config_items/groups and
+ configfs_attributes which are generic and of the same type for all
+ configured elements. However, they are embedded in usage-specific
+ larger structures. In the picture below there is a "cs" which contains
+ a config_item and an "sa" which contains a configfs_attribute.
+ 
++文件系统的概览如下：
+ The filesystem view would be like this::
+ 
+   ./
+@@ -325,8 +374,15 @@ The filesystem view would be like this::
+      .
+      .
+ 
++无论任何时候一个用户读写这个 sa 文件，就会调用一个接受 struct config_item 和
++struct configfs_attribute 参数的函数。
+ Whenever a user reads/writes the "sa" file, a function is called
+ which accepts a struct config_item and a struct configfs_attribute.
++
++在刚才提到的函数中，会通过 container_of 这个宏获取对应的 sa 和 cs 数据结构。
++使用一个有关 sa 参数的函数来展示或者存储，还包含了cs参数以及一个字符串。
++show函数用来展示文件的内容（从cs复制文件到缓存），而store函数用来修改文件的文件（
++从缓存复制数据到cs）,但是还需要最终的实现者决定这两个函数实际用来做什么事情。
+ In the said function the "cs" and "sa" are retrieved using the well
+ known container_of technique and an appropriate sa's function (show or
+ store) is called and passed the "cs" and a character buffer. The "show"
+@@ -354,15 +410,22 @@ two functions to decide what they actually do.
+   |                 |                .
+   +-----------------+                .
+ 
++文件的名字由 config item/group 的设计者决定，但是目录的命名可以随意。
++一个 group 可以自动创建一些它默认的 sub-groups
+ The file names are decided by the config item/group designer, while
+ the directories in general can be named at will. A group can have
+ a number of its default sub-groups created automatically.
+ 
++有关 configfs 更多信息请参看文档
+ For more information on configfs please see
+ `Documentation/filesystems/configfs.rst`.
+ 
++上述介绍的一些转换 USB gadget 概念如下：
+ The concepts described above translate to USB gadgets like this:
+ 
++1. 一个 gadget 有自己的配置组，每一个配置组（设备描述符）有一些属性（idVendor, idProduct 等）
++还有一些默认的 sub-groups (configs(配置描述符), functions(接口描述符还是端点描述符？感觉是接口描述符), strings).
++写属性会将信息存储到合适的位置。在配置中，用户可以创建它们的functions 和字符串 sub-grouops.
+ 1. A gadget has its config group, which has some attributes (idVendor,
+ idProduct etc) and default sub-groups (configs, functions, strings).
+ Writing to the attributes causes the information to be stored in
+@@ -370,6 +433,9 @@ appropriate locations. In the configs, functions and strings sub-groups
+ a user can create their sub-groups to represent configurations, functions,
+ and groups of strings in a given language.
+ 
++2. 用户创建配置和功能，在配置中创建符号链接到具体的功能。当往 gadget‘s UDC 属性
++中写入的时候需要这些信息，表示绑定 gadget 到指定的 UDC。drivers/usb/gadget/configfs.c 文件
++会迭代所有的配置，并且在每一个配置中会迭代绑定的所有功能。通过这种方式，所有的 gadget 就都绑定起来了。
+ 2. The user creates configurations and functions, in the configurations
+ creates symbolic links to functions. This information is used when the
+ gadget's UDC attribute is written to, which means binding the gadget
+@@ -377,18 +443,29 @@ to the UDC. The code in drivers/usb/gadget/configfs.c iterates over
+ all configurations, and in each configuration it iterates over all
+ functions and binds them. This way the whole gadget is bound.
+ 
++3. 文件 drivers/usb/gadget/configfs.c 包含了如下功能的代码
++   - gadget 的 config_group
++   - gadget 的 default group (configs, functions, strings)
++   - 关联功能到配置(符号链接)
++
+ 3. The file drivers/usb/gadget/configfs.c contains code for
+ 
+ 	- gadget's config_group
+ 	- gadget's default groups (configs, functions, strings)
+ 	- associating functions with configurations (symlinks)
+ 
++4. 每一个 USB 的功能很自然地有它自己需要的配置，所以 config_groups 实际使用的函数
++定义在文件 drivers/usb/gadget/f_*.c
++
+ 4. Each USB function naturally has its own view of what it wants
+ configured, so config_groups for particular functions are defined
+ in the functions implementation files drivers/usb/gadget/f_*.c.
+ 
++5. 功能代码在使用的时候使用下述方式进行编写
+ 5. Function's code is written in such a way that it uses
+ 
++usb_get_function_instance() 反过来调用请求的模块。所以，假定 modprobe 正常工作，
++实际功能的模块会自动加载。请注意，反之，在一个 gadget 被禁用并且卸载掉之后，模块亦然是加载状态。
+ usb_get_function_instance(), which, in turn, calls request_module.
+ So, provided that modprobe works, modules for particular functions
+ are loaded automatically. Please note that the converse is not true:
+diff --git a/Documentation/usb/gadget_serial.rst b/Documentation/usb/gadget_serial.rst
+index dce8bc1fb1f2..63060aea4339 100644
+--- a/Documentation/usb/gadget_serial.rst
++++ b/Documentation/usb/gadget_serial.rst
+@@ -53,11 +53,15 @@ sysfs in /sys, and use "mdev" (in Busybox) or "udev" to make the
+ 
+ Overview
+ --------
++gadget 串口驱动是 Linux 的 USB gadget 驱动，是 USB device 侧的驱动。它运行在 Linux
++端（包含 USB 硬件设备）.举例来说，一个 PDA，一个嵌入式 Linux 系统或者一个带有 USB 卡的
++PC。
+ The gadget serial driver is a Linux USB gadget driver, a USB device
+ side driver.  It runs on a Linux system that has USB device side
+ hardware; for example, a PDA, an embedded Linux system, or a PC
+ with a USB development card.
+ 
++gadget 串口驱动借助 USB 线通过 CDC/ACM 驱动或者一个实际的 USB 转串口驱动和主机 PC 通信。
+ The gadget serial driver talks over USB to either a CDC ACM driver
+ or a generic USB serial driver running on a host PC::
+ 
+@@ -81,32 +85,45 @@ or a generic USB serial driver running on a host PC::
+   | System                   USB Stack   |
+    --------------------------------------
+ 
++在 device 的 Linux 这端， gadget 串口驱动看起来就像是一个串口设备。
+ On the device-side Linux system, the gadget serial driver looks
+ like a serial device.
+ 
++在主机端，gadget serial 设备看起来就像是一个 CDC ACM 兼容的类设备或者一个简单
++的厂家专属的 bulk in 和 bulk out 端点设备，并且看起来和其他的串口设备都是相似的。
+ On the host-side system, the gadget serial device looks like a
+ CDC ACM compliant class device or a simple vendor specific device
+ with bulk in and bulk out endpoints, and it is treated similarly
+ to other serial devices.
+ 
++主机端的驱动可以选择任意 ACM 兼容的驱动或者可以使用简单 bulk in/out 接口和设备通信
++的驱动。
+ The host side driver can potentially be any ACM compliant driver
+ or any driver that can talk to a device with a simple bulk in/out
+ interface.  Gadget serial has been tested with the Linux ACM driver,
+ the Windows usbser.sys ACM driver, and the Linux USB generic serial
+ driver.
+ 
++通过 gadget serial 驱动并且主机端也加载有 ACM 或者通用的串口驱动，你就可以使用一个
++串口线实现主机和 gadget 之间的通信。
+ With the gadget serial driver and the host side ACM or generic
+ serial driver running, you should be able to communicate between
+ the host and the gadget side systems as if they were connected by a
+ serial cable.
+ 
++gadget 串口驱动提供的是简单的不可靠的数据通信。目前还不支持流控或者真是串口设备的一些其他功能。
+ The gadget serial driver only provides simple unreliable data
+ communication.  It does not yet handle flow control or many other
+ features of normal serial devices.
+ 
+ 
++安装串口驱动
+ Installing the Gadget Serial Driver
+ -----------------------------------
++为了使用 gadget 串口驱动，你必须在内核端配置开启 "Support for USB Gadgets",
++.. "Serial Gadget", 所以的上述配置都在 USB Gadget Support 选项卡下。然后重新
++编译内核和模块。
++
+ To use the gadget serial driver you must configure the Linux gadget
+ side kernel for "Support for USB Gadgets", for a "USB Peripheral
+ Controller" (for example, net2280), and for the "Serial Gadget"
+@@ -114,6 +131,7 @@ driver.  All this are listed under "USB Gadget Support" when
+ configuring the kernel.  Then rebuild and install the kernel or
+ modules.
+ 
++通过 modprobe 加载 gadget serial 驱动
+ Then you must load the gadget serial driver.  To load it as an
+ ACM device (recommended for interoperability), do this::
+ 
+@@ -128,6 +146,7 @@ controller driver.  This must be done each time you reboot the gadget
+ side Linux system.  You can add this to the start up scripts, if
+ desired.
+ 
++系统端就可以使用 mdev 或者 udev 创建指定的节点。
+ Your system should use mdev (from busybox) or udev to make the
+ device nodes.  After this gadget driver has been set up you should
+ then see a /dev/ttyGS0 node::
+@@ -136,15 +155,20 @@ then see a /dev/ttyGS0 node::
+   crw-rw----    1 root     root     253,   0 May  8 14:10 /dev/ttyGS0
+   #
+ 
++注意，上述中的 253 主设备号是专门的。
+ Note that the major number (253, above) is system-specific.  If
+ you need to create /dev nodes by hand, the right numbers to use
+ will be in the /sys/class/tty/ttyGS0/dev file.
+ 
++当你静态链接了 gadget serial 驱动，那么你可能想建立一个 /etc/inittab 的入口来运行 getty 命令。
+ When you link this gadget driver early, perhaps even statically,
+ you may want to set up an /etc/inittab entry to run "getty" on it.
+ The /dev/ttyGS0 line should work like most any other serial port.
+ 
+ 
++如果 gadget 串口加载之后是一个 ACM 设备，你将希望在 windows 或者 linux 主机端使用 ACM 驱动。
++如果 gadget 串口被加载为一个 bulk in/out 设备，你将希望在主机端使用 Linux 通用的串口驱动。根据
++下属指令完成在主机端的驱动安装。
+ If gadget serial is loaded as an ACM device you will want to use
+ either the Windows or Linux ACM driver on the host side.  If gadget
+ serial is loaded as a bulk in/out device, you will want to use the
+@@ -253,6 +277,7 @@ system log saying something like "Gadget Serial converter now
+ attached to ttyUSB0".
+ 
+ 
++使用 Minicom 或者 HyperTerminal 进行测试
+ Testing with Minicom or HyperTerminal
+ -------------------------------------
+ Once the gadget serial driver and the host driver are both installed,
+@@ -260,6 +285,7 @@ and a USB cable connects the gadget device to the host, you should
+ be able to communicate over USB between the gadget and host systems.
+ You can use minicom or HyperTerminal to try this out.
+ 
++在 gadget 端，运行命令 minicom -s 来配置一个新的 minicom 会话。
+ On the gadget side run "minicom -s" to configure a new minicom
+ session.  Under "Serial port setup" set "/dev/ttygserial" as the
+ "Serial Device".  Set baud rate, data bits, parity, and stop bits,
+diff --git a/Documentation/usb/raw-gadget.rst b/Documentation/usb/raw-gadget.rst
+index 68d879a8009e..c221c7cc3e40 100644
+--- a/Documentation/usb/raw-gadget.rst
++++ b/Documentation/usb/raw-gadget.rst
+@@ -71,6 +71,7 @@ like all USB request processing happen during the lifetime of a syscall),
+ and must be kept in the implementation. (This might be slow for real world
+ applications, thus the O_NONBLOCK improvement suggestion below.)
+ 
++将来潜在的提升
+ Potential future improvements
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 
