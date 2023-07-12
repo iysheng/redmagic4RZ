@@ -1,0 +1,3 @@
+[submodule "raw-gadget"]
+	path = raw-gadget
+	url = git@github.com:iysheng/raw-gadget.git
