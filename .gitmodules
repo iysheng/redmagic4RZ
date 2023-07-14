@@ -1,3 +1,6 @@
 [submodule "raw-gadget"]
 	path = raw-gadget
 	url = git@github.com:iysheng/raw-gadget.git
+[submodule "github_myir-renesas-linux"]
+	path = github_myir-renesas-linux
+	url = https://ghproxy.com/https://github.com/iysheng/myir-renesas-linux.git
